@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
+from typing import Any, cast
+from interactions.api.http.route import Route
 from dotenv import load_dotenv
 from interactions import (
     Client,
@@ -30,6 +32,7 @@ BASE = Path(__file__).parent
 DT_PATTERN = re.compile(
     r'\{[~]?(?:.*?!)?(?:(?:(\d{4})/)?(\d{1,2})/(\d{1,2})\s*)?(?:(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?\}'
 )
+EMOJI_PATTERN = re.compile(r':([a-zA-Z0-9_]+):')
 
 
 class SizedCache:
@@ -108,10 +111,35 @@ def dt_replacer(match: re.Match[str]):
     return f'<t:{int(now.timestamp())}{spec}>'
 
 
-def make_timestr(string: str):
-    return DT_PATTERN.sub(dt_replacer, string)
+def emoji_replacer(match: re.Match[str]):
+    name = match.group(1)
+    if name in emojis:
+        return f'<:{name}:{emojis[name]}>'
+    return f':{name}:'
 
 
+async def make_message(string: str):
+    global emojis
+    string = DT_PATTERN.sub(dt_replacer, string)
+    if datetime.now() - emoji_updated > timedelta(minutes=5):
+        for match in EMOJI_PATTERN.finditer(string):
+            name = match.group(1)
+            if name not in emojis:
+                emoji_route = Route(
+                    'GET',
+                    '/applications/{application_id}/emojis',
+                    application_id=client.app.id,
+                )
+                data = cast(dict[str, Any], await client.http.request(emoji_route))
+                for item in data['items']:
+                    emojis[item['name']] = item['id']
+                break
+    string = EMOJI_PATTERN.sub(emoji_replacer, string)
+    return string
+
+
+emojis: dict[str, str] = {}
+emoji_updated = datetime.fromtimestamp(0)
 timestr_cache = SizedCache(100)
 
 client = Client(
@@ -122,20 +150,20 @@ client = Client(
 )
 
 
-@slash_command('timestr', description='Format a string with timestamps')
+@slash_command('echo', description='Send a message with template substitutions')
 @integration_types(guild=True, user=True)
 @slash_option(
-    'string',
-    description='The string with timestamps in it',
+    'message',
+    description='The message template string',
     opt_type=OptionType.STRING,
     required=True,
 )
-async def timestr_command(ctx: SlashContext, string: str):
-    message = await ctx.send(make_timestr(string))
-    timestr_cache[message.id] = string
+async def timestr_command(ctx: SlashContext, message: str):
+    message_obj = await ctx.send(await make_message(message))
+    timestr_cache[message_obj.id] = message
 
 
-@slash_command('timezone', description='Set the timezone for /timestr')
+@slash_command('timezone', description='Set your timezone')
 @integration_types(guild=True, user=True)
 @slash_option(
     'timezone',
@@ -151,7 +179,7 @@ async def timezone_command(ctx: SlashContext):
     await ctx.send(f'Timezone set to {new_tz.tzname(None)}', ephemeral=True)
 
 
-@message_context_menu('Edit /timestr message')
+@message_context_menu('Edit message')
 @integration_types(guild=True, user=True)
 async def timestr_context(ctx: ContextMenuContext):
     message = ctx.target
@@ -160,22 +188,22 @@ async def timestr_context(ctx: ContextMenuContext):
         message.author.id != client.user.id
         or message.type != MessageType.APPLICATION_COMMAND
     ):
-        return await ctx.send('This message is not a /timestr message', ephemeral=True)
+        return await ctx.send('This message is not an /echo message', ephemeral=True)
     value = timestr_cache[message.id] if message.id in timestr_cache else ''
     ipt = InputText(
-        label='/timestr string',
+        label='/echo message',
         style=TextStyles.SHORT,
-        custom_id='timestr',
+        custom_id='message',
         value=value,
     )
-    modal = Modal(ipt, title='Edit /timestr message')
+    modal = Modal(ipt, title='Edit message')
     await ctx.send_modal(modal)
     try:
         mctx = await client.wait_for_modal(modal, timeout=600)
     except TimeoutError:
         return
-    timestr_cache[message.id] = mctx.responses['timestr']
-    await mctx.edit(message.id, content=make_timestr(mctx.responses['timestr']))
+    timestr_cache[message.id] = mctx.responses['message']
+    await mctx.edit(message.id, content=await make_message(mctx.responses['message']))
 
 
 client.start(TOKEN)

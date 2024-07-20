@@ -11,3 +11,7 @@ uvloop = "^0.19.0"
 name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 priority = "primary"
+
+[tool.poetry.group.dev.dependencies]
+requests = "^2.32.3"
+
