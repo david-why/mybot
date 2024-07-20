@@ -135,6 +135,22 @@ async def timestr_command(ctx: SlashContext, string: str):
     timestr_cache[message.id] = string
 
 
+@slash_command('timezone', description='Set the timezone for /timestr')
+@integration_types(guild=True, user=True)
+@slash_option(
+    'timezone',
+    description='The timezone to set',
+    opt_type=OptionType.INTEGER,
+    required=True,
+    min_value=-12,
+    max_value=12,
+)
+async def timezone_command(ctx: SlashContext):
+    new_tz = timezone(timedelta(hours=ctx.kwargs['timezone']))
+    set_timezone(new_tz)
+    await ctx.send(f'Timezone set to {new_tz.tzname(None)}', ephemeral=True)
+
+
 @message_context_menu('Edit /timestr message')
 @integration_types(guild=True, user=True)
 async def timestr_context(ctx: ContextMenuContext):
