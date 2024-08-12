@@ -1,11 +1,10 @@
-import asyncio
 import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast
-from interactions.api.http.route import Route
+from typing import Any, Generic, TypeVar, cast
+
 from dotenv import load_dotenv
 from interactions import (
     Client,
@@ -13,16 +12,17 @@ from interactions import (
     InputText,
     Intents,
     Message,
-    MessageType,
     Modal,
     OptionType,
     SlashContext,
+    Snowflake,
     TextStyles,
     integration_types,
     message_context_menu,
     slash_command,
     slash_option,
 )
+from interactions.api.http.route import Route
 
 load_dotenv()
 
@@ -32,17 +32,20 @@ BASE = Path(__file__).parent
 DT_PATTERN = re.compile(
     r'\{[~]?(?:.*?!)?(?:(?:(\d{4})/)?(\d{1,2})/(\d{1,2})\s*)?(?:(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?\}'
 )
-EMOJI_PATTERN = re.compile(r':([a-zA-Z0-9_]+):')
+EMOJI_PATTERN = re.compile(r'(?<!<)::([a-zA-Z0-9_]+)::')
+
+K = TypeVar('K')
+V = TypeVar('V')
 
 
-class SizedCache:
+class SizedCache(Generic[K, V]):
     def __init__(self, size: int):
         self.size = size
         assert size > 0
-        self.list = []
-        self.values = {}
+        self.list: list[K] = []
+        self.values: dict[K, V] = {}
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: K, value: V):
         if key in self.values:
             self.list.remove(key)
         if len(self.list) >= self.size:
@@ -51,11 +54,11 @@ class SizedCache:
         self.list.append(key)
         self.values[key] = value
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: K) -> V:
         return self.values[item]
 
-    def __contains__(self, item):
-        return item in self.list
+    def __contains__(self, item: K) -> bool:
+        return item in self.values
 
 
 def get_timezone():
@@ -118,35 +121,38 @@ def emoji_replacer(match: re.Match[str]):
     return f':{name}:'
 
 
+async def update_emojis():
+    if datetime.now() - emoji_updated < timedelta(minutes=5):
+        return
+    route = Route(
+        'GET',
+        '/applications/{application_id}/emojis',
+        application_id=client.app.id,
+    )
+    data = cast(dict[str, Any], await client.http.request(route))
+    for item in data['items']:
+        emojis[item['name']] = item['id']
+
+
 async def make_message(string: str):
     global emojis
     string = DT_PATTERN.sub(dt_replacer, string)
-    if datetime.now() - emoji_updated > timedelta(minutes=5):
-        for match in EMOJI_PATTERN.finditer(string):
-            name = match.group(1)
-            if name not in emojis:
-                emoji_route = Route(
-                    'GET',
-                    '/applications/{application_id}/emojis',
-                    application_id=client.app.id,
-                )
-                data = cast(dict[str, Any], await client.http.request(emoji_route))
-                for item in data['items']:
-                    emojis[item['name']] = item['id']
-                break
+    if EMOJI_PATTERN.search(string):
+        await update_emojis()
     string = EMOJI_PATTERN.sub(emoji_replacer, string)
     return string
 
 
 emojis: dict[str, str] = {}
 emoji_updated = datetime.fromtimestamp(0)
-timestr_cache = SizedCache(100)
+timestr_cache: SizedCache[Snowflake, str] = SizedCache(100)
 
 client = Client(
     intents=Intents.DEFAULT,
     basic_logging=True,
     logging_level=logging.DEBUG,
     send_command_tracebacks=False,
+    proxy_url=os.environ.get('PROXY_URL'),
 )
 
 
@@ -158,8 +164,9 @@ client = Client(
     opt_type=OptionType.STRING,
     required=True,
 )
-async def timestr_command(ctx: SlashContext, message: str):
-    message_obj = await ctx.send(await make_message(message))
+async def echo_command(ctx: SlashContext, message: str):
+    contents = await make_message(message)
+    message_obj = await ctx.send(contents)
     timestr_cache[message_obj.id] = message
 
 
@@ -181,19 +188,16 @@ async def timezone_command(ctx: SlashContext):
 
 @message_context_menu('Edit message')
 @integration_types(guild=True, user=True)
-async def timestr_context(ctx: ContextMenuContext):
+async def edit_context(ctx: ContextMenuContext):
     message = ctx.target
     assert isinstance(message, Message)
-    if (
-        message.author.id != client.user.id
-        or message.type != MessageType.APPLICATION_COMMAND
-    ):
-        return await ctx.send('This message is not an /echo message', ephemeral=True)
+    if message.author.id != client.user.id:
+        return await ctx.send('This message is not sent by me!', ephemeral=True)
     value = timestr_cache[message.id] if message.id in timestr_cache else ''
     ipt = InputText(
-        label='/echo message',
+        label='New message content',
         style=TextStyles.SHORT,
-        custom_id='message',
+        custom_id='string',
         value=value,
     )
     modal = Modal(ipt, title='Edit message')
@@ -202,8 +206,23 @@ async def timestr_context(ctx: ContextMenuContext):
         mctx = await client.wait_for_modal(modal, timeout=600)
     except TimeoutError:
         return
-    timestr_cache[message.id] = mctx.responses['message']
-    await mctx.edit(message.id, content=await make_message(mctx.responses['message']))
+    timestr_cache[message.id] = mctx.responses['string']
+    await mctx.edit(message.id, content=await make_message(mctx.responses['string']))
 
 
-client.start(TOKEN)
+@message_context_menu('Delete message')
+@integration_types(guild=True, user=True)
+async def delete_context(ctx: ContextMenuContext):
+    message = ctx.target
+    assert isinstance(message, Message)
+    if message.author.id != client.user.id:
+        return await ctx.send('This message is not sent by me!', ephemeral=True)
+    try:
+        await message.delete()
+    except:
+        return await ctx.send('Failed to delete message!', ephemeral=True)
+    await ctx.send('Message deleted!', ephemeral=True)
+
+
+if __name__ == '__main__':
+    client.start(TOKEN)
