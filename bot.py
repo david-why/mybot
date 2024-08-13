@@ -11,16 +11,19 @@ from interactions import (
     ContextMenuContext,
     InputText,
     Intents,
+    Member,
     Message,
     Modal,
     OptionType,
     SlashContext,
     Snowflake,
     TextStyles,
+    User,
     integration_types,
     message_context_menu,
     slash_command,
     slash_option,
+    user_context_menu,
 )
 from interactions.api.http.route import Route
 
@@ -222,6 +225,55 @@ async def delete_context(ctx: ContextMenuContext):
     except:
         return await ctx.send('Failed to delete message!', ephemeral=True)
     await ctx.send('Message deleted!', ephemeral=True)
+
+
+async def get_user_info(user: User | Member):
+    try:
+        discr = user.discriminator
+    except AttributeError:
+        discr = 0
+    content = (
+        f'User Display Name: {user.display_name}\n'
+        f'User ID: {user.id}\n'
+        f'Username: {user.username}\n'
+        f'Discriminator: {discr}\n'
+        f'User avatar: {user.avatar_url}\n'
+        f'User flags: {user.public_flags.name}\n'
+    )
+    if isinstance(user, Member):
+        try:
+            perms = user.guild_permissions
+        except AttributeError:
+            perms = '???'
+        roles = ' '.join(f'<@&{role}>' for role in user._role_ids)
+        content += (
+            f'Joined at: {user.joined_at.format("f")}\n'
+            f'Permissions: {perms}\n'
+            f'Roles: {roles}\n'
+        )
+    return content.strip()
+
+
+@user_context_menu('User info')
+@integration_types(guild=True, user=True)
+async def user_info(ctx: ContextMenuContext):
+    user = ctx.target
+    assert isinstance(user, (User, Member))
+    await ctx.send(await get_user_info(user), ephemeral=True)
+
+
+@slash_command('userinfo', description='Get user info')
+@integration_types(guild=True, user=True)
+@slash_option(
+    'user',
+    description='The user to get info',
+    opt_type=OptionType.USER,
+    required=False,
+)
+async def userinfo_command(ctx: SlashContext, user: User | Member | None = None):
+    if user is None:
+        user = ctx.author
+    await ctx.send(await get_user_info(user), ephemeral=True)
 
 
 if __name__ == '__main__':
