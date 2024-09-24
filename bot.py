@@ -5,20 +5,31 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generic, TypeVar, cast
 
+import aiohttp
 from dotenv import load_dotenv
 from interactions import (
+    TYPE_MESSAGEABLE_CHANNEL,
+    AllowedMentions,
+    Button,
+    ButtonStyle,
+    ChannelType,
     Client,
     ContextMenuContext,
+    GuildChannel,
+    GuildText,
     InputText,
     Intents,
     Member,
     Message,
     Modal,
     OptionType,
+    OverwriteType,
     SlashContext,
     Snowflake,
     TextStyles,
     User,
+    component_callback,
+    contexts,
     integration_types,
     message_context_menu,
     slash_command,
@@ -30,6 +41,9 @@ from interactions.api.http.route import Route
 load_dotenv()
 
 TOKEN = os.environ['BOT_TOKEN']
+
+CLIENT_ID = os.environ['CLIENT_ID']
+CLIENT_SECRET = os.environ['CLIENT_SECRET']
 
 BASE = Path(__file__).parent
 DT_PATTERN = re.compile(
@@ -139,6 +153,7 @@ async def update_emojis():
 
 async def make_message(string: str):
     global emojis
+    string = string.replace('\\n', '\n')
     string = DT_PATTERN.sub(dt_replacer, string)
     if EMOJI_PATTERN.search(string):
         await update_emojis()
@@ -259,7 +274,16 @@ async def get_user_info(user: User | Member):
 async def user_info(ctx: ContextMenuContext):
     user = ctx.target
     assert isinstance(user, (User, Member))
-    await ctx.send(await get_user_info(user), ephemeral=True)
+    component = Button(
+        style=ButtonStyle.PRIMARY, label='Make public', custom_id='public'
+    )
+    await ctx.send(await get_user_info(user), ephemeral=True, components=component)
+
+
+@component_callback('public')
+async def public_callback(ctx: SlashContext):
+    assert ctx.message
+    await ctx.send(ctx.message.content, allowed_mentions={'parse': []})
 
 
 @slash_command('userinfo', description='Get user info')
@@ -270,10 +294,103 @@ async def user_info(ctx: ContextMenuContext):
     opt_type=OptionType.USER,
     required=False,
 )
-async def userinfo_command(ctx: SlashContext, user: User | Member | None = None):
+@slash_option(
+    'ephemeral',
+    description='Whether to make the message ephemeral',
+    opt_type=OptionType.BOOLEAN,
+    required=False,
+)
+async def userinfo_command(
+    ctx: SlashContext, user: User | Member | None = None, ephemeral: bool = True
+):
     if user is None:
         user = ctx.author
-    await ctx.send(await get_user_info(user), ephemeral=True)
+    component = Button(
+        style=ButtonStyle.PRIMARY, label='Make public', custom_id='public'
+    )
+    await ctx.send(
+        await get_user_info(user),
+        ephemeral=ephemeral,
+        allowed_mentions={'parse': []},
+        components=component if ephemeral else None,
+    )
+
+
+async def get_channel_info(channel: GuildChannel):
+    channel_type = channel.type
+    if isinstance(channel.type, ChannelType):
+        channel_type = channel.type.name
+    content = (
+        f'Channel ID: {channel.id}\n'
+        f'Channel Name: {channel.name}\n'
+        f'Channel Type: {channel_type}\n'
+        f'Guild ID: {channel._guild_id}\n'
+        f'Created at: {channel.created_at.format("f")}\n'
+        f'NSFW: {channel.nsfw}\n'
+        f'Position: {channel.position}\n'
+    )
+    if isinstance(channel, GuildText):
+        content += (
+            f'Topic: {channel.topic}\n' f'Slowmode: {channel.rate_limit_per_user}\n'
+        )
+    if not channel.permission_overwrites:
+        content += 'No permission overwrites\n'
+    else:
+        content += 'Permission overwrites:\n'
+        for overwrite in channel.permission_overwrites:
+            mention = (
+                f'<@{overwrite.id}>'
+                if overwrite.type == OverwriteType.MEMBER
+                else f'<@&{overwrite.id}>'
+            )
+            content += f'  {overwrite.type.name} {mention}'
+            if overwrite.allow is not None:
+                content += f' | Allow {overwrite.allow.name}'
+            if overwrite.deny is not None:
+                content += f' | Deny {overwrite.deny.name}'
+            content += '\n'
+    return content.strip()
+
+
+@slash_command('channelinfo', description='Get channel info')
+@integration_types(guild=True, user=True)
+@contexts(bot_dm=False)
+@slash_option(
+    'channel',
+    description='The channel to get info',
+    opt_type=OptionType.CHANNEL,
+    required=False,
+)
+@slash_option(
+    'ephemeral',
+    description='Whether to make the message ephemeral',
+    opt_type=OptionType.BOOLEAN,
+    required=False,
+)
+async def channelinfo_command(
+    ctx: SlashContext, channel: GuildChannel | None = None, ephemeral: bool = True
+):
+    for key in dir(channel):
+        try:
+            value = getattr(channel, key)
+        except:
+            continue
+        print(f'{key}: {value}')
+    if channel is None:
+        if ctx.guild_id is None:
+            return await ctx.send(
+                'This command must be used in a guild!', ephemeral=True
+            )
+        channel = cast(GuildChannel, ctx.channel)
+    component = Button(
+        style=ButtonStyle.PRIMARY, label='Make public', custom_id='public'
+    )
+    await ctx.send(
+        await get_channel_info(channel),
+        ephemeral=ephemeral,
+        allowed_mentions={'parse': []},
+        components=component if ephemeral else None,
+    )
 
 
 if __name__ == '__main__':
