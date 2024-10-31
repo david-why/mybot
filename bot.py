@@ -114,16 +114,20 @@ def parse_spec(string: str, timed: bool, dated: bool):
 def dt_replacer(match: re.Match[str]):
     y, m, d, H, M, S = map(lambda x: x if x is None else int(x), match.groups())
     now = datetime.now().astimezone(get_timezone()).replace(second=0)
-    for key, val in {
-        'year': y,
-        'month': m,
-        'day': d,
-        'hour': H,
-        'minute': M,
-        'second': S,
-    }.items():
-        if val is not None:
-            now = now.replace(**{key: val})  # type: ignore
+    now = now.replace(
+        **{  # type: ignore
+            key: val
+            for key, val in {
+                'year': y,
+                'month': m,
+                'day': d,
+                'hour': H,
+                'minute': M,
+                'second': S,
+            }.items()
+            if val is not None
+        }
+    )
     timed = H is not None
     dated = d is not None
     begin, end = match.span()
