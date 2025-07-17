@@ -1,5 +1,7 @@
+import base64
 import logging
 import os
+import random
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +52,7 @@ DT_PATTERN = re.compile(
     r'\{[~]?(?:.*?!)?(?:(?:(\d{4})/)?(\d{1,2})/(\d{1,2})\s*)?(?:(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?\}'
 )
 EMOJI_PATTERN = re.compile(r'(?<!<)::([a-zA-Z0-9_]+)::')
+ANIMATED_EMOJI_PATTERN = re.compile(r'<a:([a-zA-Z0-9_]+):([0-9]+)>')
 
 K = TypeVar('K')
 V = TypeVar('V')
@@ -138,7 +141,7 @@ def dt_replacer(match: re.Match[str]):
 def emoji_replacer(match: re.Match[str]):
     name = match.group(1)
     if name in emojis:
-        return f'<:{name}:{emojis[name]}>'
+        return f'<{"a" if emojis[name][1] else ""}:{name}:{emojis[name][0]}>'
     return f':{name}:'
 
 
@@ -152,7 +155,7 @@ async def update_emojis():
     )
     data = cast(dict[str, Any], await client.http.request(route))
     for item in data['items']:
-        emojis[item['name']] = item['id']
+        emojis[item['name']] = (item['id'], item['animated'])
 
 
 async def make_message(string: str):
@@ -165,7 +168,7 @@ async def make_message(string: str):
     return string
 
 
-emojis: dict[str, str] = {}
+emojis: dict[str, tuple[str, bool]] = {}
 emoji_updated = datetime.fromtimestamp(0)
 timestr_cache: SizedCache[Snowflake, str] = SizedCache(100)
 
@@ -187,6 +190,7 @@ client = Client(
     required=True,
 )
 async def echo_command(ctx: SlashContext, message: str):
+    await ctx.defer()
     contents = await make_message(message)
     message_obj = await ctx.send(contents)
     timestr_cache[message_obj.id] = message
